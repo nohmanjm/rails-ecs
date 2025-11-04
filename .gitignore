@@ -1,0 +1,23 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Build artifacts
+*.log
+
+# Ruby/Bundler
+.bundle/
+vendor/bundle
+tmp/
+log/
+
+# Docker
+.dockerignore
