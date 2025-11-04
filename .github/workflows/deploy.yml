@@ -105,34 +105,3 @@ jobs:
           ALB_DNS=$(terraform output -raw alb_dns_name)
           echo "ALB_DNS_NAME=$ALB_DNS" >> $GITHUB_ENV
         working-directory: ./infra
-
-      # 12. Post-Deploy Verification: Curl Health Check
-      - name: Verify Health Check
-        run: |
-          echo "Verifying health check at: ${{ env.ALB_DNS_NAME }}/health"
-          # Loop for up to 2 minutes (12 retries * 10s)
-          for i in {1..12}; do 
-            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" ${{ env.ALB_DNS_NAME }}/health)
-            if [ "$RESPONSE" -eq 200 ]; then
-              echo "Health check succeeded with status 200!"
-              exit 0
-            fi
-            echo "Attempt $i: Health check failed with status $RESPONSE. Retrying in 10s..."
-            sleep 10
-          done
-          echo "Health check failed after 2 minutes."
-          exit 1
-```
-
----
-
-### ➡️ Next Step: Push the Fixed File
-
-1.  **Update:** Replace your existing `deploy.yml` with the content above.
-2.  **Commit & Push:** Commit this single change and push to `main`.
-
-```bash
-git add .github/workflows/deploy.yml
-git commit -m "FIX: Simplify CI/CD workflow into a single job"
-git push origin main
-
