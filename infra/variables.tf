@@ -5,7 +5,7 @@ variable "project_name" {
 
 variable "aws_region" {
   type    = string
-  default = "eu-central-1" # set yours
+  default = "eu-central-1"
 }
 
 variable "vpc_cidr" {
@@ -21,7 +21,7 @@ variable "public_subnet_cidrs" {
   ]
 }
 
-# Container config (your image listens on 80)
+# Container config (The port the application listens on, confirmed to be 3000)
 variable "container_port" {
   type    = number
   default = 3000
@@ -42,13 +42,13 @@ variable "memory" {
   default = 512
 }
 
-# Image tag pushed by CI later (for a first run, you can leave "latest")
+# Image tag pushed by CI later.
 variable "image_tag" {
   type    = string
   default = "latest"
 }
 
-# Secrets/Env via SSM
+# Secrets/Env via SSM (used by ssm.tf)
 variable "rails_env" {
   type    = string
   default = "production"
@@ -56,10 +56,10 @@ variable "rails_env" {
 
 variable "secret_key_base" {
   type    = string
-  default = ""
+  default = "a-placeholder-secret-for-rails"
 }
 
 variable "rails_master_key" {
   type    = string
-  default = ""
+  default = "a-placeholder-master-key"
 }

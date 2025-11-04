@@ -1,79 +1,84 @@
-# ============================================================
-# ALB + Target Group for rails-ecs
-# ============================================================
 
-# Public ALB security group (allow HTTP from anywhere)
-resource "aws_security_group" "alb" {
-  # Use name_prefix so Terraform can create a new SG before destroying the old one
-  name_prefix = "${var.project_name}-alb-"
-  description = "Allow inbound HTTP to ALB"
+resource "aws_security_group" "alb_sg" {
+  name        = "${var.project_name}-alb-sg"
+  description = "Allow all inbound HTTP traffic on port 80"
   vpc_id      = aws_vpc.main.id
 
+  # Rule 1: Allow inbound HTTP from everywhere for the ALB
   ingress {
-    description = "HTTP"
+    protocol    = "tcp"
     from_port   = 80
     to_port     = 80
-    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
+  
+  # Rule 2: Allow all outbound traffic (best practice for ALB to reach targets)
   egress {
-    description = "All egress"
+    protocol    = "-1"
     from_port   = 0
     to_port     = 0
-    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
 
-  lifecycle {
-    create_before_destroy = true
+resource "aws_security_group" "ecs_sg" {
+  name        = "${var.project_name}-ecs-sg"
+  description = "Allows traffic only from ALB and outbound internet"
+  vpc_id      = aws_vpc.main.id
+
+  # Rule 1 (Inbound): Allow container port (3000) traffic only from the ALB's security group
+  ingress {
+    protocol        = "tcp"
+    from_port       = var.container_port
+    to_port         = var.container_port
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  # Rule 2 (Outbound): Allow containers to reach the internet (for ECR, SSM, external APIs)
+  egress {
+    protocol    = "-1"
+    from_port   = 0
+    to_port     = 0
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-# Application Load Balancer (public)
-resource "aws_lb" "app_alb" {
+resource "aws_lb" "rails_ecs_alb" {
   name               = "${var.project_name}-alb"
-  load_balancer_type = "application"
   internal           = false
-  subnets            = [for s in aws_subnet.public : s.id]
-  security_groups    = [aws_security_group.alb.id]
-
-  enable_http2 = true
-  idle_timeout = 60
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = aws_subnet.public.*.id
 }
 
-# Target Group forwarding to ECS tasks (IP target type)
-resource "aws_lb_target_group" "app" {
-  # Use a prefix so TF can replace safely without "in use" errors
-  name_prefix = "rails-"
-
-  port        = var.container_port # expect 3000
+resource "aws_lb_target_group" "rails_ecs_tg" {
+  name        = "${var.project_name}-tg"
+  port        = var.container_port
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
+  
+  # Ensure the Target Group waits for the ALB to be created
+  depends_on = [aws_lb.rails_ecs_alb]
 
   health_check {
     path                = "/health"
-    matcher             = "200-399" # more forgiving during boot
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
     healthy_threshold   = 2
     unhealthy_threshold = 2
-    interval            = 30
-    timeout             = 10
-  }
-
-  lifecycle {
-    create_before_destroy = true
   }
 }
 
-# HTTP listener on :80 forwarding to the target group
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.app_alb.arn
+resource "aws_lb_listener" "http_listener" {
+  load_balancer_arn = aws_lb.rails_ecs_alb.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
+    target_group_arn = aws_lb_target_group.rails_ecs_tg.arn
   }
 }

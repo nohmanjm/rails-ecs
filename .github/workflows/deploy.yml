@@ -1,0 +1,111 @@
+name: Deploy Ruby API to AWS Fargate
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT_NAME: ${{ vars.PROJECT_NAME || 'rails-ecs' }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  ECR_REPOSITORY: ${{ vars.PROJECT_NAME || 'rails-ecs' }}
+  S3_BUCKET: devops-rails-state-bucket-unique-name # MUST match infra/main.tf
+  DYNAMODB_TABLE: devops-lock-table                 # MUST match infra/main.tf
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    # Ensure all required secrets and variables are available
+    needs: [terraform-init] 
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # --- AWS Configuration ---
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # --- Terraform Setup ---
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.x
+      
+      # --- Terraform Plan and Apply ---
+      - name: Terraform Init (Prepare Backend)
+        id: init
+        run: |
+          # Use the environment variables to configure the S3 backend
+          terraform init -backend-config="bucket=${{ env.S3_BUCKET }}" -backend-config="key=${{ env.PROJECT_NAME }}/terraform.tfstate" -backend-config="region=${{ env.AWS_REGION }}" -backend-config="dynamodb_table=${{ env.DYNAMODB_TABLE }}" infra/
+
+      - name: Terraform Plan and Apply
+        id: apply
+        run: |
+          terraform plan -out=tfplan -var="image_tag=${{ github.sha }}" infra/
+          terraform apply -auto-approve tfplan
+          
+      # --- Docker Build & Push ---
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # --- ECS Deployment ---
+      - name: Deploy to ECS Fargate
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        id: render-task
+        with:
+          task-definition: infra/task-definition.json
+          container-name: ${{ env.PROJECT_NAME }}
+          image: ${{ steps.build-image.outputs.IMAGE_URI }}
+
+      - name: Deploy Amazon ECS service
+        uses: aws-actions/amazon-ecs-deploy-service@v1
+        with:
+          service: ${{ env.PROJECT_NAME }}-service
+          cluster: ${{ env.PROJECT_NAME }}-cluster
+          wait-for-service-stability: true
+          task-definition: ${{ steps.render-task.outputs.task-definition }}
+
+      # --- Verification (Health Check) ---
+      - name: Get ALB DNS Name
+        id: get-output
+        run: |
+          ALB_DNS=$(terraform output -raw alb_dns_name infra/)
+          echo "ALB_DNS=$ALB_DNS" >> $GITHUB_ENV
+
+      - name: Verify Health Check Endpoint
+        # Uses 'nc' (netcat) to check the port before running curl
+        run: |
+          echo "Waiting for ALB DNS: ${{ env.ALB_DNS }}"
+          # Simple check to see if the ALB is resolving and port 80 is open
+          nc -vz ${{ env.ALB_DNS }} 80 5 
+          
+          # Retry curl up to 10 times (50 seconds) to wait for service stability
+          for i in {1..10}; do
+            RESPONSE=$(curl -sS -o /dev/null -w "%{http_code}" http://${{ env.ALB_DNS }}/health)
+            if [ "$RESPONSE" = "200" ]; then
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Health check failed (HTTP $RESPONSE). Retrying in 5s..."
+            sleep 5
+          done
+          echo "Failed to get 200 from health endpoint."
+          exit 1
