@@ -1,111 +1,138 @@
-name: Deploy Ruby API to AWS Fargate
+name: Deploy Rails API to AWS ECS
 
+# Trigger this workflow on a push to the main branch
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
+# Define environment variables for the entire workflow
 env:
-  PROJECT_NAME: ${{ vars.PROJECT_NAME || 'rails-ecs' }}
-  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
-  ECR_REPOSITORY: ${{ vars.PROJECT_NAME || 'rails-ecs' }}
-  S3_BUCKET: devops-rails-state-bucket-unique-name # MUST match infra/main.tf
-  DYNAMODB_TABLE: devops-lock-table                 # MUST match infra/main.tf
+  AWS_REGION: eu-central-1 # Your AWS region
+  ECR_REPOSITORY: rails-ecs
+  ECS_CLUSTER: rails-ecs-cluster
+  ECS_SERVICE: rails-ecs-service
+  ECS_TASK_DEFINITION_NAME: rails-ecs-task-definition
+  CONTAINER_NAME: rails-ecs-container
+
+# Grant OIDC permissions for AWS authentication
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  build-and-deploy:
+  # Define the single deployment job
+  deploy:
     runs-on: ubuntu-latest
-    
-    # Ensure all required secrets and variables are available
-    needs: [terraform-init] 
-
     steps:
+      # 1. Check out the repository code
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # --- AWS Configuration ---
-      - name: Configure AWS credentials
+      # 2. Configure AWS Credentials using OIDC
+      - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Use the OIDC role ARN constructed from the GitHub Secret
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubOIDCRole
           aws-region: ${{ env.AWS_REGION }}
 
-      # --- Terraform Setup ---
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.x
-      
-      # --- Terraform Plan and Apply ---
-      - name: Terraform Init (Prepare Backend)
-        id: init
-        run: |
-          # Use the environment variables to configure the S3 backend
-          terraform init -backend-config="bucket=${{ env.S3_BUCKET }}" -backend-config="key=${{ env.PROJECT_NAME }}/terraform.tfstate" -backend-config="region=${{ env.AWS_REGION }}" -backend-config="dynamodb_table=${{ env.DYNAMODB_TABLE }}" infra/
-
-      - name: Terraform Plan and Apply
-        id: apply
-        run: |
-          terraform plan -out=tfplan -var="image_tag=${{ github.sha }}" infra/
-          terraform apply -auto-approve tfplan
-          
-      # --- Docker Build & Push ---
+      # 3. Log in to Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to Amazon ECR
+      # 4. Build, Tag, and Push image to ECR
+      - name: Build, Tag, and Push image to ECR
         id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
-      # --- ECS Deployment ---
-      - name: Deploy to ECS Fargate
+      # 5. Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # 6. Terraform Init (using secrets for backend config)
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=rails-ecs/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+        working-directory: ./infra
+
+      # 7. Terraform Apply (Idempotent)
+      # This will confirm infrastructure is up-to-date and output the ALB DNS
+      - name: Terraform Apply
+        id: tf-apply
+        run: terraform apply -auto-approve -var="image_tag=${{ env.IMAGE_TAG }}"
+        working-directory: ./infra
+
+      # 8. Download Task Definition from Terraform Output
+      # We download the task definition that Terraform created
+      - name: Download Task Definition
+        id: task-def
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ env.ECS_TASK_DEFINITION_NAME }} \
+          --query taskDefinition > task-definition.json
+        
+      # 9. Render New Task Definition with Updated Image
+      - name: Fill New Image in Task Definition
+        id: render-task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
-        id: render-task
         with:
-          task-definition: infra/task-definition.json
-          container-name: ${{ env.PROJECT_NAME }}
-          image: ${{ steps.build-image.outputs.IMAGE_URI }}
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
 
-      - name: Deploy Amazon ECS service
-        uses: aws-actions/amazon-ecs-deploy-service@v1
+      # 10. Deploy to ECS Service
+      - name: Deploy to ECS Service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
-          service: ${{ env.PROJECT_NAME }}-service
-          cluster: ${{ env.PROJECT_NAME }}-cluster
-          wait-for-service-stability: true
-          task-definition: ${{ steps.render-task.outputs.task-definition }}
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true # Wait for the new task to be healthy
 
-      # --- Verification (Health Check) ---
+      # 11. Post-Deploy Verification: Get ALB DNS Name
       - name: Get ALB DNS Name
-        id: get-output
+        id: get-alb-dns
         run: |
-          ALB_DNS=$(terraform output -raw alb_dns_name infra/)
-          echo "ALB_DNS=$ALB_DNS" >> $GITHUB_ENV
+          ALB_DNS=$(terraform output -raw alb_dns_name)
+          echo "ALB_DNS_NAME=$ALB_DNS" >> $GITHUB_ENV
+        working-directory: ./infra
 
-      - name: Verify Health Check Endpoint
-        # Uses 'nc' (netcat) to check the port before running curl
+      # 12. Post-Deploy Verification: Curl Health Check
+      - name: Verify Health Check
         run: |
-          echo "Waiting for ALB DNS: ${{ env.ALB_DNS }}"
-          # Simple check to see if the ALB is resolving and port 80 is open
-          nc -vz ${{ env.ALB_DNS }} 80 5 
-          
-          # Retry curl up to 10 times (50 seconds) to wait for service stability
-          for i in {1..10}; do
-            RESPONSE=$(curl -sS -o /dev/null -w "%{http_code}" http://${{ env.ALB_DNS }}/health)
-            if [ "$RESPONSE" = "200" ]; then
-              echo "Health check passed!"
+          echo "Verifying health check at: ${{ env.ALB_DNS_NAME }}/health"
+          # Loop for up to 2 minutes (12 retries * 10s)
+          for i in {1..12}; do 
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" ${{ env.ALB_DNS_NAME }}/health)
+            if [ "$RESPONSE" -eq 200 ]; then
+              echo "Health check succeeded with status 200!"
               exit 0
             fi
-            echo "Health check failed (HTTP $RESPONSE). Retrying in 5s..."
-            sleep 5
+            echo "Attempt $i: Health check failed with status $RESPONSE. Retrying in 10s..."
+            sleep 10
           done
-          echo "Failed to get 200 from health endpoint."
+          echo "Health check failed after 2 minutes."
           exit 1
+```
+
+---
+
+### ➡️ Next Step: Push the Fixed File
+
+1.  **Update:** Replace your existing `deploy.yml` with the content above.
+2.  **Commit & Push:** Commit this single change and push to `main`.
+
+```bash
+git add .github/workflows/deploy.yml
+git commit -m "FIX: Simplify CI/CD workflow into a single job"
+git push origin main
+
