@@ -21,7 +21,7 @@ variable "public_subnet_cidrs" {
   ]
 }
 
-# Container config (The port the application listens on, confirmed to be 3000)
+
 variable "container_port" {
   type    = number
   default = 3000
@@ -42,13 +42,13 @@ variable "memory" {
   default = 512
 }
 
-# Image tag pushed by CI later.
+
 variable "image_tag" {
   type    = string
   default = "latest"
 }
 
-# Secrets/Env via SSM (used by ssm.tf)
+
 variable "rails_env" {
   type    = string
   default = "production"

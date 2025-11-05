@@ -6,9 +6,9 @@ terraform {
     }
   }
 
-  # Remote state backend with S3 and DynamoDB locking
+
   backend "s3" {
-    # REPLACE these with the exact names you created via CLI:
+
     bucket         = "devops-rails-state-bucket-2025-nohman" 
     key            = "rails-ecs/terraform.tfstate"
     region         = "eu-central-1" 

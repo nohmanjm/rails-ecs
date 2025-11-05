@@ -1,48 +1,43 @@
 name: Deploy Rails API to AWS ECS
 
-# Trigger this workflow on a push to the main branch
+
 on:
   push:
     branches:
       - main
 
-# Define environment variables for the entire workflow
+
 env:
-  AWS_REGION: eu-central-1 # Your AWS region
+  AWS_REGION: eu-central-1 
   ECR_REPOSITORY: rails-ecs
   ECS_CLUSTER: rails-ecs-cluster
   ECS_SERVICE: rails-ecs-service
   ECS_TASK_DEFINITION_NAME: rails-ecs-task-definition
   CONTAINER_NAME: rails-ecs-container
 
-# Grant OIDC permissions for AWS authentication
+
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  # Define the single deployment job
   deploy:
     runs-on: ubuntu-latest
     steps:
-      # 1. Check out the repository code
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. Configure AWS Credentials using OIDC
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # Use the OIDC role ARN constructed from the GitHub Secret
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubOIDCRole
           aws-region: ${{ env.AWS_REGION }}
 
-      # 3. Log in to Amazon ECR
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 4. Build, Tag, and Push image to ECR
       - name: Build, Tag, and Push image to ECR
         id: build-image
         run: |
@@ -51,11 +46,9 @@ jobs:
           docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
-      # 5. Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      # 6. Terraform Init (using secrets for backend config)
       - name: Terraform Init
         run: |
           terraform init \
@@ -65,22 +58,23 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
         working-directory: ./infra
 
-      # 7. Terraform Apply (Idempotent)
-      # This will confirm infrastructure is up-to-date and output the ALB DNS
+      - name: Terraform Plan
+        id: tf-plan
+        run: |
+          terraform plan -var="image_tag=${{ env.IMAGE_TAG }}"
+        working-directory: ./infra
+
       - name: Terraform Apply
         id: tf-apply
         run: terraform apply -auto-approve -var="image_tag=${{ env.IMAGE_TAG }}"
         working-directory: ./infra
 
-      # 8. Download Task Definition from Terraform Output
-      # We download the task definition that Terraform created
       - name: Download Task Definition
         id: task-def
         run: |
           aws ecs describe-task-definition --task-definition ${{ env.ECS_TASK_DEFINITION_NAME }} \
           --query taskDefinition > task-definition.json
         
-      # 9. Render New Task Definition with Updated Image
       - name: Fill New Image in Task Definition
         id: render-task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -89,19 +83,46 @@ jobs:
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
 
-      # 10. Deploy to ECS Service
       - name: Deploy to ECS Service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: ${{ steps.render-task-def.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true # Wait for the new task to be healthy
+          wait-for-service-stability: true 
 
-      # 11. Post-Deploy Verification: Get ALB DNS Name
       - name: Get ALB DNS Name
         id: get-alb-dns
         run: |
           ALB_DNS=$(terraform output -raw alb_dns_name)
           echo "ALB_DNS_NAME=$ALB_DNS" >> $GITHUB_ENV
         working-directory: ./infra
+
+
+      - name: Verify Health Check
+        run: |
+          echo "Verifying health check at: ${{ env.ALB_DNS_NAME }}/health"
+          for i in {1..12}; do 
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" ${{ env.ALB_DNS_NAME }}/health)
+            if [ "$RESPONSE" -eq 200 ]; then
+              echo "Health check succeeded with status 200!"
+              exit 0
+            fi
+            echo "Attempt $i: Health check failed with status $RESPONSE. Retrying in 10s..."
+            sleep 10
+          done
+          echo "Health check failed after 2 minutes."
+          exit 1
+
+    
+
+
+      - name: Send Slack Notification
+        uses: rtCamp/action-slack-notify@v2
+        if: always()
+        with:
+          status: ${{ job.status }}
+          title: 'Deploy: ${{ github.repository }}'
+          message: 'Build on `main` by ${{ github.actor }} finished with status: ${{ job.status }}.'
+          footer: '<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|View Commit>'
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}

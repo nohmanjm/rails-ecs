@@ -1,4 +1,4 @@
-# [Image of an electronic circuit board]
+
 output "alb_dns_name" {
   description = "The DNS name of the Application Load Balancer"
   value       = aws_lb.rails_ecs_alb.dns_name

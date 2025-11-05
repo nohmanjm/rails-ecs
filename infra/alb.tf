@@ -4,7 +4,7 @@ resource "aws_security_group" "alb_sg" {
   description = "Allow all inbound HTTP traffic on port 80"
   vpc_id      = aws_vpc.main.id
 
-  # Rule 1: Allow inbound HTTP from everywhere for the ALB
+
   ingress {
     protocol    = "tcp"
     from_port   = 80
@@ -12,7 +12,7 @@ resource "aws_security_group" "alb_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
   
-  # Rule 2: Allow all outbound traffic (best practice for ALB to reach targets)
+
   egress {
     protocol    = "-1"
     from_port   = 0
@@ -26,7 +26,7 @@ resource "aws_security_group" "ecs_sg" {
   description = "Allows traffic only from ALB and outbound internet"
   vpc_id      = aws_vpc.main.id
 
-  # Rule 1 (Inbound): Allow container port (3000) traffic only from the ALB's security group
+
   ingress {
     protocol        = "tcp"
     from_port       = var.container_port
@@ -34,7 +34,7 @@ resource "aws_security_group" "ecs_sg" {
     security_groups = [aws_security_group.alb_sg.id]
   }
 
-  # Rule 2 (Outbound): Allow containers to reach the internet (for ECR, SSM, external APIs)
+
   egress {
     protocol    = "-1"
     from_port   = 0
@@ -58,7 +58,7 @@ resource "aws_lb_target_group" "rails_ecs_tg" {
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
   
-  # Ensure the Target Group waits for the ALB to be created
+
   depends_on = [aws_lb.rails_ecs_alb]
 
   health_check {

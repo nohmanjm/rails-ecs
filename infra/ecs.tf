@@ -6,7 +6,7 @@ resource "aws_ecs_cluster" "rails_ecs_cluster" {
 
 # 2. IAM Roles and Policies
 
-# Task EXECUTION Role (Used by ECS agent to pull image and manage logs/secrets)
+
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "${var.project_name}-task-execution-role"
   assume_role_policy = jsonencode({
@@ -23,13 +23,13 @@ resource "aws_iam_role" "ecs_task_execution_role" {
   })
 }
 
-# Policy Attachment: ECR Access, Logging, and SSM Read
+
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_attach" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Policy Attachment: SSM Secrets Read Access (required to pull secrets/environment variables)
+
 resource "aws_iam_policy" "ssm_read_policy" {
   name        = "${var.project_name}-ssm-read-policy"
   description = "Allows ECS Tasks to read SSM SecureStrings"
@@ -54,7 +54,7 @@ resource "aws_iam_role_policy_attachment" "ecs_ssm_attach" {
   policy_arn = aws_iam_policy.ssm_read_policy.arn
 }
 
-# 3. ECS Task Definition (The blueprint for the container)
+
 resource "aws_ecs_task_definition" "rails_ecs_task_definition" {
   family                   = "${var.project_name}-task-definition"
   cpu                      = var.cpu
@@ -63,12 +63,11 @@ resource "aws_ecs_task_definition" "rails_ecs_task_definition" {
   requires_compatibilities = ["FARGATE"]
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
-  # This allows the container to define its environment variables (like PORT) 
-  # and secrets (like RAIL_ENV) via SSM (secrets block)
+ 
   container_definitions = jsonencode([
     {
       name      = "${var.project_name}-container"
-      # The image tag will be updated by GitHub Actions later
+
       image     = "${aws_ecr_repository.rails_ecs_repo.repository_url}:${var.image_tag}"
       cpu       = var.cpu
       memory    = var.memory
@@ -88,7 +87,7 @@ resource "aws_ecs_task_definition" "rails_ecs_task_definition" {
         }
       }
       environment = [
-        # Explicitly setting PORT environment variable, converted to string for JSON API
+
         { name = "PORT", value = tostring(var.container_port) } 
       ]
       secrets = [
@@ -127,7 +126,7 @@ resource "aws_ecs_service" "rails_ecs_service" {
     container_port   = var.container_port
   }
   
-  # Crucial dependency: ensures the ALB Listener is fully set up before ECS tries to link
+
   depends_on = [
     aws_lb_listener.http_listener,
     aws_iam_role_policy_attachment.ecs_task_execution_role_attach,
@@ -135,5 +134,5 @@ resource "aws_ecs_service" "rails_ecs_service" {
   ]
 }
 
-# Required to use data.aws_caller_identity.current in the IAM policy ARNs
+
 data "aws_caller_identity" "current" {}
