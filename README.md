@@ -13,6 +13,35 @@ CI/CD: GitHub Actions
 
 Cloud: AWS (ECS Fargate, ALB, ECR, VPC, S3, DynamoDB, SSM, CloudWatch)
 
+### 🐳 Building and Running Locally
+
+1.  **Build the Docker Image:**
+    From the project's root directory, run the build command. This will execute the multi-stage build defined in the `Dockerfile`.
+    
+    docker build -t rails-api .
+
+
+3.  **Run the Container:**
+    docker run -d -p 8080:3000 --name rails-api-test rails-api
+
+4.  **Test the Health Endpoint:**
+    With the container running, test the `/health` endpoint from your terminal.
+
+    curl http://localhost:8080/health
+
+    **Expected Output:** `{"status":"ok"}`
+
+5.  **View Logs & Clean Up:**
+    You can check the container's logs to see the Puma server running.
+
+    docker logs rails-api-test
+    
+    # Stop and remove the container when you are done
+    docker stop rails-api-test
+    docker rm rails-api-test
+
+
+
 🏁 Deployment Guide
 Step 1: AWS Prerequisites (Terraform Backend)
 Create an S3 bucket (e.g., my-tf-state-bucket-unique) and a DynamoDB table (e.g., my-tf-lock-table with LockID as the partition key) in your AWS account. 
