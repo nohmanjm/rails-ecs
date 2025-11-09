@@ -27,7 +27,7 @@ ENV PATH /usr/local/bundle/bin:$PATH
 
 WORKDIR $APP_HOME
 
-RUN apt-get update -qq && apt-get install -y --no-install-recommends netcat-openbsd \
+RUN apt-get update -qq && apt-get install -y --no-install-recommends netcat-openbsd curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder $BUNDLE_PATH $BUNDLE_PATH
