@@ -14,5 +14,5 @@ end
 get '/health' do
   content_type :json
   status 200
-  { status: 'ok_V2' }.to_json
+  { status: 'ok' }.to_json
 end
