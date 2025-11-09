@@ -5,4 +5,5 @@ resource "aws_ecr_repository" "rails_ecs_repo" {
   image_scanning_configuration {
     scan_on_push = true
   }
+  force_delete = true
 }
