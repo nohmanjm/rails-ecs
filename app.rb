@@ -7,7 +7,7 @@ set :port, ENV['PORT'] ? ENV['PORT'].to_i : 3000
 
 
 get '/' do
-  'Hello from the simple API.'
+  'Hello from the simple FundingPips API.'
 end
 
 
